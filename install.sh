@@ -227,3 +227,4 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo -e "Run a quick check: ${GREEN}cd $INSTALL_DIR && node lumen-daemon.js check${NC}"
 echo ""
+# Force cache update
