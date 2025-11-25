@@ -39,20 +39,40 @@ if ! command -v apt-get &> /dev/null; then
     exit 1
 fi
 
-# Check Node.js version
+# Check Node.js version and install if needed
 echo -e "${BLUE}🔍 Checking Node.js version...${NC}"
 if ! command -v node &> /dev/null; then
-    echo -e "${YELLOW}⚠️  Node.js not found. Please install Node.js >= 18 first.${NC}"
-    echo -e "${YELLOW}   Visit: https://nodejs.org/${NC}"
-    exit 1
+    echo -e "${YELLOW}⚠️  Node.js not found. Installing Node.js 20 LTS...${NC}"
+    
+    # Install Node.js using NodeSource repository
+    echo -e "${BLUE}📦 Adding NodeSource repository...${NC}"
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    
+    echo -e "${BLUE}📦 Installing Node.js...${NC}"
+    sudo apt-get install -y nodejs
+    
+    if ! command -v node &> /dev/null; then
+        echo -e "${RED}❌ Failed to install Node.js${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✅ Node.js $(node -v) installed successfully${NC}"
+else
+    NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+    if [ "$NODE_VERSION" -lt 18 ]; then
+        echo -e "${YELLOW}⚠️  Node.js version too old (found: $(node -v)). Upgrading to Node.js 20 LTS...${NC}"
+        
+        # Upgrade Node.js using NodeSource repository
+        echo -e "${BLUE}📦 Adding NodeSource repository...${NC}"
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+        
+        echo -e "${BLUE}📦 Upgrading Node.js...${NC}"
+        sudo apt-get install -y nodejs
+        
+        echo -e "${GREEN}✅ Node.js $(node -v) upgraded successfully${NC}"
+    else
+        echo -e "${GREEN}✅ Node.js $(node -v) detected${NC}"
+    fi
 fi
-
-NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-if [ "$NODE_VERSION" -lt 18 ]; then
-    echo -e "${YELLOW}⚠️  Node.js version must be >= 18 (found: $(node -v))${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✅ Node.js $(node -v) detected${NC}"
 
 # Check if git is installed
 if ! command -v git &> /dev/null; then
