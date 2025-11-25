@@ -74,9 +74,20 @@ node lumen-daemon.js review       # Review suggestions
 
 ## 📚 Documentation
 
+- **[DROPLET_GUIDE.md](DROPLET_GUIDE.md)** - 🆕 Deploy on fresh Ubuntu droplets/VPS
 - **[GUIDE.md](GUIDE.md)** - Complete walkthrough
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical details
 - **[lumenbridge.md](lumenbridge.md)** - API reference
+
+## 💧 Fresh Ubuntu Droplet?
+
+**Installing on a brand new Ubuntu server?** Check out **[DROPLET_GUIDE.md](DROPLET_GUIDE.md)** for:
+
+- ✅ Zero-to-running in under 5 minutes
+- ✅ Works on minimal installs (DigitalOcean, AWS, Linode, etc.)
+- ✅ Automatic package installation and configuration
+- ✅ Security best practices
+- ✅ Resource optimization for small droplets
 
 ## 🌟 What Makes This Special
 

@@ -70,11 +70,36 @@ if ! command -v apt-get &> /dev/null; then
     error_exit "This installer requires apt-get (Ubuntu/Debian)" "Run on Ubuntu, Debian, or WSL2 with Ubuntu"
 fi
 
+# Detect Ubuntu version
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    echo -e "${CYAN}📋 Detected: $NAME $VERSION${NC}"
+fi
+
 # Check for sudo access
 if ! sudo -n true 2>/dev/null; then
     echo -e "${YELLOW}🔐 Sudo access required for installation${NC}"
     sudo -v || error_exit "Cannot obtain sudo privileges" "Run 'sudo -v' to verify sudo access"
 fi
+
+# Update package lists (critical for fresh droplets)
+echo -e "${BLUE}📦 Updating package lists...${NC}"
+if ! sudo apt-get update -qq 2>/dev/null; then
+    echo -e "${YELLOW}⚠️  Initial update failed, trying with full output...${NC}"
+    sudo apt-get update || error_exit "Failed to update package lists" "Check your internet connection and DNS settings"
+fi
+echo -e "${GREEN}✓${NC} Package lists updated"
+
+# Install essential packages that might be missing on minimal droplets
+echo -e "${BLUE}📦 Installing essential packages...${NC}"
+ESSENTIAL_PACKAGES="curl wget git ca-certificates gnupg"
+for pkg in $ESSENTIAL_PACKAGES; do
+    if ! dpkg -l | grep -q "^ii  $pkg "; then
+        echo -e "${CYAN}  Installing $pkg...${NC}"
+        sudo apt-get install -y $pkg -qq 2>/dev/null || echo -e "${YELLOW}  Warning: Could not install $pkg${NC}"
+    fi
+done
+echo -e "${GREEN}✓${NC} Essential packages ready"
 
 # Check Node.js version and install if needed
 echo -e "${BLUE}🔍 Checking Node.js version...${NC}"
@@ -124,11 +149,9 @@ else
     fi
 fi
 
-# Check if git is installed
+# Verify git is working (already installed in essentials above)
 if ! command -v git &> /dev/null; then
-    echo -e "${YELLOW}📦 Installing git...${NC}"
-    sudo apt-get update -qq
-    sudo apt-get install -y git
+    error_exit "Git installation failed" "Try manually: sudo apt-get install git"
 fi
 
 # Clone or update repository
@@ -152,14 +175,25 @@ fi
 
 # Make scripts executable
 echo -e "${BLUE}🔧 Setting up permissions...${NC}"
-chmod +x terminal-optimizer.js lumen-daemon.js config.js install-daemon.sh status.sh diagnose.sh uninstall.sh examples/custom-agents.js 2>/dev/null || true
+chmod +x terminal-optimizer.js lumen-daemon.js config.js install-daemon.sh status.sh diagnose.sh uninstall.sh test-install.sh examples/custom-agents.js 2>/dev/null || true
 
-# Install tree if not present
-if ! command -v tree &> /dev/null; then
-    echo -e "${BLUE}📦 Installing tree utility...${NC}"
-    sudo apt-get update -qq
-    sudo apt-get install -y tree
+# Check and fix locale (common issue on fresh droplets)
+if ! locale -a | grep -qi "en_US.utf8\|en_US.UTF-8"; then
+    echo -e "${BLUE}🌍 Setting up locale...${NC}"
+    sudo apt-get install -y locales -qq 2>/dev/null || true
+    sudo locale-gen en_US.UTF-8 2>/dev/null || true
+    echo -e "${GREEN}✓${NC} Locale configured"
 fi
+
+# Install useful utilities
+echo -e "${BLUE}📦 Installing utilities...${NC}"
+UTILITY_PACKAGES="tree htop ncdu net-tools"
+for pkg in $UTILITY_PACKAGES; do
+    if ! command -v $pkg &> /dev/null && ! dpkg -l | grep -q "^ii  $pkg "; then
+        sudo apt-get install -y $pkg -qq 2>/dev/null || echo -e "${YELLOW}  Skipped: $pkg${NC}"
+    fi
+done
+echo -e "${GREEN}✓${NC} Utilities installed"
 
 # Set up environment for multiple shells
 echo -e "${BLUE}🌍 Configuring environment...${NC}"
