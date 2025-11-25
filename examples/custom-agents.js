@@ -25,7 +25,11 @@ async function registerCustomAgent(userId, name, description, prompt) {
   });
 
   const data = await res.json();
-  console.log('✅ Registered:', data.agent?.name);
+  if (!res.ok) {
+    console.error('❌ Failed to register:', name, '-', data.error || data.message);
+    return data;
+  }
+  console.log('✅ Registered:', data.agentName || data.agent?.name || name);
   return data;
 }
 
