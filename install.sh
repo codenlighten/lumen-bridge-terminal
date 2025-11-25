@@ -119,8 +119,8 @@ fi
 
 # Offer to install as systemd service
 echo ""
-echo -e "${BLUE}🤖 Daemon Installation${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Daemon Installation${NC}"
+echo -e "${BLUE}========================${NC}"
 read -p "Install Lumen Daemon as a system service? (Y/n): " -n 1 -r
 echo
 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
@@ -146,8 +146,8 @@ fi
 
 # Offer to register custom agents
 echo ""
-echo -e "${BLUE}🎯 Custom Agent Registration${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Custom Agent Registration${NC}"
+echo -e "${BLUE}=============================${NC}"
 read -p "Register custom specialist agents (DevWorkflow, Security, Performance)? (Y/n): " -n 1 -r
 echo
 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
