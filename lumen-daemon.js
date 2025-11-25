@@ -125,7 +125,7 @@ class LumenDaemon {
     await this.log(`Planning: "${task.substring(0, 50)}..."`);
     
     // Use CodeGenerator to create custom optimization script
-    const codeGenResult = await this.callAgent('code-generator', {
+    const codeGenResult = await this.callAgent('code', {
       prompt: `Create a safe, idempotent bash script for: ${task}
 
 Requirements:
@@ -161,20 +161,9 @@ Requirements:
     await this.log(`📁 Backing up ${filePath}: ${reason}`);
     
     try {
-      // Use File Operations API to safely backup
-      const readResult = await this.callAgent('file-operations', {
-        operation: 'read',
-        filePath,
-      });
-
+      // Local file backup (File Operations API not available yet)
       const backupPath = `${filePath}.lumen-backup-${Date.now()}`;
-      
-      await this.callAgent('file-operations', {
-        operation: 'write',
-        filePath: backupPath,
-        content: readResult.content,
-      });
-
+      await fs.copyFile(filePath, backupPath);
       await this.log(`✅ Backup created: ${backupPath}`);
       return backupPath;
     } catch (err) {
@@ -184,101 +173,86 @@ Requirements:
   }
 
   async storeOptimizationMemory(optimization, outcome) {
-    await this.log('🧠 Storing optimization in memory...');
+    await this.log('🧠 Storing optimization in local memory...');
     
-    try {
-      await this.callAgent('memory', {
-        operation: 'store',
-        userId: 'system',
-        key: `optimization-${optimization.type}-${Date.now()}`,
-        value: {
-          description: optimization.description,
-          command: optimization.plan?.command,
-          outcome,
-          timestamp: Date.now(),
-          systemProfile: this.state.systemProfile,
-          success: outcome.success,
-          errorMessage: outcome.error,
-        },
-        metadata: {
-          category: 'system-optimization',
-          type: optimization.type,
-          severity: optimization.severity,
-        },
-      });
-
-      await this.log('✅ Memory stored for learning');
-    } catch (err) {
-      await this.log(`⚠️  Memory storage failed: ${err.message}`, 'WARN');
+    // Store in local state file (Memory API not available yet)
+    if (!this.state.optimizationHistory) {
+      this.state.optimizationHistory = [];
     }
+
+    this.state.optimizationHistory.push({
+      description: optimization.description,
+      type: optimization.type,
+      command: optimization.plan?.command,
+      outcome,
+      timestamp: Date.now(),
+      systemProfile: { ...this.state.systemProfile },
+      success: outcome.success,
+      errorMessage: outcome.error,
+    });
+
+    // Keep only last 100 entries
+    if (this.state.optimizationHistory.length > 100) {
+      this.state.optimizationHistory = this.state.optimizationHistory.slice(-100);
+    }
+
+    await this.saveState();
+    await this.log('✅ Memory stored locally');
   }
 
   async checkPastOptimizations(type) {
     await this.log(`🔍 Checking past ${type} optimizations...`);
     
-    try {
-      const memories = await this.callAgent('memory', {
-        operation: 'query',
-        userId: 'system',
-        filter: { category: 'system-optimization', type },
-        limit: 10,
-      });
-
-      if (memories.results && memories.results.length > 0) {
-        const recentFailures = memories.results.filter(m => !m.value.success);
-        if (recentFailures.length > 0) {
-          await this.log(`⚠️  Found ${recentFailures.length} past failures for ${type}`, 'WARN');
-          return { hasFailures: true, failures: recentFailures };
-        }
-      }
-
-      return { hasFailures: false };
-    } catch (err) {
-      await this.log(`⚠️  Memory query failed: ${err.message}`, 'WARN');
+    if (!this.state.optimizationHistory) {
       return { hasFailures: false };
     }
+
+    const pastAttempts = this.state.optimizationHistory.filter(h => h.type === type);
+    const recentFailures = pastAttempts.filter(a => !a.success).slice(-3);
+
+    if (recentFailures.length >= 2) {
+      await this.log(`⚠️  Found ${recentFailures.length} recent failures for ${type}`, 'WARN');
+      return { hasFailures: true, failures: recentFailures };
+    }
+
+    return { hasFailures: false };
   }
 
   async createOptimizationTask(optimization) {
-    await this.log('📝 Creating task for long-term tracking...');
+    await this.log('📝 Creating task for tracking...');
     
-    try {
-      const task = await this.callAgent('tasks', {
-        operation: 'create',
-        userId: 'system',
-        title: optimization.description,
-        description: `${optimization.suggestion}\n\nType: ${optimization.type}\nSeverity: ${optimization.severity}`,
-        status: 'pending',
-        priority: optimization.severity === 'high' ? 'high' : 'medium',
-        metadata: {
-          category: 'system-optimization',
-          type: optimization.type,
-          command: optimization.plan?.command,
-          requiresSudo: optimization.plan?.requiresSudo,
-        },
-      });
-
-      await this.log(`✅ Task created: ${task.taskId}`);
-      return task.taskId;
-    } catch (err) {
-      await this.log(`⚠️  Task creation failed: ${err.message}`, 'WARN');
-      return null;
+    // Store task locally (Task Management API not available yet)
+    if (!this.state.tasks) {
+      this.state.tasks = [];
     }
+
+    const taskId = `task-${Date.now()}`;
+    this.state.tasks.push({
+      taskId,
+      title: optimization.description,
+      description: `${optimization.suggestion}\n\nType: ${optimization.type}\nSeverity: ${optimization.severity}`,
+      status: 'pending',
+      priority: optimization.severity === 'high' ? 'high' : 'medium',
+      type: optimization.type,
+      command: optimization.plan?.command,
+      createdAt: Date.now(),
+    });
+
+    await this.saveState();
+    await this.log(`✅ Task created: ${taskId}`);
+    return taskId;
   }
 
   async updateTaskStatus(taskId, status, outcome) {
-    try {
-      await this.callAgent('tasks', {
-        operation: 'update',
-        userId: 'system',
-        taskId,
-        status,
-        metadata: { outcome, completedAt: Date.now() },
-      });
+    if (!this.state.tasks) return;
 
+    const task = this.state.tasks.find(t => t.taskId === taskId);
+    if (task) {
+      task.status = status;
+      task.outcome = outcome;
+      task.completedAt = Date.now();
+      await this.saveState();
       await this.log(`✅ Task ${taskId} updated to ${status}`);
-    } catch (err) {
-      await this.log(`⚠️  Task update failed: ${err.message}`, 'WARN');
     }
   }
 
