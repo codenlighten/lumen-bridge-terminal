@@ -28,6 +28,15 @@ Transform your Ubuntu workstation into a self-aware, self-optimizing system powe
 curl -fsSL https://raw.githubusercontent.com/codenlighten/lumen-bridge-terminal/main/install.sh | bash
 ```
 
+**New in v2.0:**
+
+- ✨ Enhanced installer with progress indicators
+- 🔍 WSL2/WSL automatic detection
+- 🐚 Multi-shell support (bash, zsh, fish)
+- 🏥 Post-install health checks
+- 🔄 Automatic retry logic for network operations
+- 📋 Comprehensive error messages with troubleshooting tips
+
 Or manual installation:
 
 ```bash
@@ -45,10 +54,22 @@ cd ~/lumen-terminal
 # Interactive optimization
 node terminal-optimizer.js "optimize my dev environment"
 
+# Configuration management
+node config.js setup              # Interactive setup
+node config.js show               # View current config
+node config.js set daemon.checkInterval 1800  # 30 min checks
+
 # Daemon mode
-node lumen-daemon.js check    # One-time check
-node lumen-daemon.js review   # Review suggestions
-./install-daemon.sh           # Install as service
+node lumen-daemon.js check        # One-time check
+node lumen-daemon.js review       # Review suggestions
+./install-daemon.sh               # Install as service
+
+# Diagnostics & troubleshooting
+./diagnose.sh                     # Run full system diagnostic
+./status.sh                       # Quick status check
+
+# Uninstall
+./uninstall.sh                    # Clean removal
 ```
 
 ## 📚 Documentation
@@ -64,21 +85,25 @@ node lumen-daemon.js review   # Review suggestions
 ### 🧠 Advanced Capabilities
 
 **Self-Learning System**
+
 - Memory API stores every optimization outcome
 - Learns from failures to avoid repeating mistakes
 - Personalizes recommendations based on your system history
 
 **Dynamic Script Generation**
+
 - CodeGenerator creates custom optimization scripts on-the-fly
 - Tailored to your specific hardware and software configuration
 - Includes automatic rollback and error recovery
 
 **Long-Term Tracking**
+
 - Task Management API tracks optimization goals across months
 - Monitors completion rates and system improvements
 - Recurring optimization tasks for continuous improvement
 
 **Safe Config Management**
+
 - File Operations API backs up configs before modifications
 - Maintains version history of system configurations
 - Automatic restoration on failures

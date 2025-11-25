@@ -15,7 +15,31 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+# Spinner for long operations
+show_spinner() {
+    local pid=$1
+    local delay=0.1
+    local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    while ps -p $pid > /dev/null 2>&1; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+}
+
+# Error handler
+error_exit() {
+    echo -e "${RED}❌ Error: $1${NC}" >&2
+    echo -e "${YELLOW}💡 Troubleshooting: $2${NC}" >&2
+    exit 1
+}
 
 # Configuration
 INSTALL_DIR="$HOME/lumen-terminal"
@@ -33,10 +57,23 @@ cat << "EOF"
 EOF
 echo -e "${NC}"
 
+# Detect platform and environment
+echo -e "${BLUE}🔍 Detecting platform...${NC}"
+IS_WSL=false
+if grep -qEi "(Microsoft|WSL)" /proc/version 2>/dev/null; then
+    IS_WSL=true
+    echo -e "${CYAN}🪟 WSL2/WSL detected${NC}"
+fi
+
 # Check if running on Ubuntu/Debian
 if ! command -v apt-get &> /dev/null; then
-    echo -e "${RED}❌ Error: This installer requires apt-get (Ubuntu/Debian)${NC}"
-    exit 1
+    error_exit "This installer requires apt-get (Ubuntu/Debian)" "Run on Ubuntu, Debian, or WSL2 with Ubuntu"
+fi
+
+# Check for sudo access
+if ! sudo -n true 2>/dev/null; then
+    echo -e "${YELLOW}🔐 Sudo access required for installation${NC}"
+    sudo -v || error_exit "Cannot obtain sudo privileges" "Run 'sudo -v' to verify sudo access"
 fi
 
 # Check Node.js version and install if needed
@@ -44,16 +81,30 @@ echo -e "${BLUE}🔍 Checking Node.js version...${NC}"
 if ! command -v node &> /dev/null; then
     echo -e "${YELLOW}⚠️  Node.js not found. Installing Node.js 20 LTS...${NC}"
     
-    # Install Node.js using NodeSource repository
+    # Install Node.js using NodeSource repository with retry logic
     echo -e "${BLUE}📦 Adding NodeSource repository...${NC}"
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    RETRY_COUNT=0
+    MAX_RETRIES=3
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -; then
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+            echo -e "${YELLOW}⚠️  Retry $RETRY_COUNT/$MAX_RETRIES...${NC}"
+            sleep 2
+        fi
+    done
+    
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        error_exit "Failed to add NodeSource repository" "Check your internet connection and try again"
+    fi
     
     echo -e "${BLUE}📦 Installing Node.js...${NC}"
-    sudo apt-get install -y nodejs
+    sudo apt-get install -y nodejs || error_exit "Node.js installation failed" "Try 'sudo apt-get update && sudo apt-get install nodejs'"
     
     if ! command -v node &> /dev/null; then
-        echo -e "${RED}❌ Failed to install Node.js${NC}"
-        exit 1
+        error_exit "Node.js installation verification failed" "Manually install Node.js 18+ and retry"
     fi
     echo -e "${GREEN}✅ Node.js $(node -v) installed successfully${NC}"
 else
@@ -61,12 +112,11 @@ else
     if [ "$NODE_VERSION" -lt 18 ]; then
         echo -e "${YELLOW}⚠️  Node.js version too old (found: $(node -v)). Upgrading to Node.js 20 LTS...${NC}"
         
-        # Upgrade Node.js using NodeSource repository
         echo -e "${BLUE}📦 Adding NodeSource repository...${NC}"
-        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - || error_exit "Failed to add NodeSource repository" "Check your internet connection"
         
         echo -e "${BLUE}📦 Upgrading Node.js...${NC}"
-        sudo apt-get install -y nodejs
+        sudo apt-get install -y nodejs || error_exit "Node.js upgrade failed" "Try manually: sudo apt-get update && sudo apt-get install nodejs"
         
         echo -e "${GREEN}✅ Node.js $(node -v) upgraded successfully${NC}"
     else
@@ -102,7 +152,7 @@ fi
 
 # Make scripts executable
 echo -e "${BLUE}🔧 Setting up permissions...${NC}"
-chmod +x terminal-optimizer.js lumen-daemon.js install-daemon.sh status.sh examples/custom-agents.js 2>/dev/null || true
+chmod +x terminal-optimizer.js lumen-daemon.js config.js install-daemon.sh status.sh diagnose.sh uninstall.sh examples/custom-agents.js 2>/dev/null || true
 
 # Install tree if not present
 if ! command -v tree &> /dev/null; then
@@ -111,12 +161,45 @@ if ! command -v tree &> /dev/null; then
     sudo apt-get install -y tree
 fi
 
-# Set up environment
+# Set up environment for multiple shells
 echo -e "${BLUE}🌍 Configuring environment...${NC}"
-if ! grep -q "LUMENBRIDGE_URL" ~/.bashrc; then
-    echo "export LUMENBRIDGE_URL=\"$LUMENBRIDGE_URL\"" >> ~/.bashrc
-    echo -e "${GREEN}✅ Added LUMENBRIDGE_URL to ~/.bashrc${NC}"
-fi
+
+# Detect user's shell
+USER_SHELL=$(basename "$SHELL")
+echo -e "${CYAN}🐚 Detected shell: $USER_SHELL${NC}"
+
+# Configure based on shell
+case "$USER_SHELL" in
+    bash)
+        SHELL_RC="$HOME/.bashrc"
+        if ! grep -q "LUMENBRIDGE_URL" "$SHELL_RC" 2>/dev/null; then
+            echo "export LUMENBRIDGE_URL=\"$LUMENBRIDGE_URL\"" >> "$SHELL_RC"
+            echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$SHELL_RC"
+            echo -e "${GREEN}✅ Added configuration to ~/.bashrc${NC}"
+        fi
+        ;;
+    zsh)
+        SHELL_RC="$HOME/.zshrc"
+        if ! grep -q "LUMENBRIDGE_URL" "$SHELL_RC" 2>/dev/null; then
+            echo "export LUMENBRIDGE_URL=\"$LUMENBRIDGE_URL\"" >> "$SHELL_RC"
+            echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$SHELL_RC"
+            echo -e "${GREEN}✅ Added configuration to ~/.zshrc${NC}"
+        fi
+        ;;
+    fish)
+        FISH_CONFIG="$HOME/.config/fish/config.fish"
+        mkdir -p "$(dirname "$FISH_CONFIG")"
+        if ! grep -q "LUMENBRIDGE_URL" "$FISH_CONFIG" 2>/dev/null; then
+            echo "set -gx LUMENBRIDGE_URL \"$LUMENBRIDGE_URL\"" >> "$FISH_CONFIG"
+            echo "set -gx PATH \$PATH \"$INSTALL_DIR\"" >> "$FISH_CONFIG"
+            echo -e "${GREEN}✅ Added configuration to ~/.config/fish/config.fish${NC}"
+        fi
+        ;;
+    *)
+        echo -e "${YELLOW}⚠️  Unknown shell: $USER_SHELL. Add manually:${NC}"
+        echo -e "${CYAN}export LUMENBRIDGE_URL=\"$LUMENBRIDGE_URL\"${NC}"
+        ;;
+esac
 
 # Offer to install as systemd service
 echo ""
@@ -226,6 +309,61 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${GREEN}🌉 Your laptop now has a living agent OS!${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
+
+# Run post-install health check
+echo -e "${BLUE}🔍 Running post-install health check...${NC}"
+HEALTH_CHECK_PASSED=true
+
+# Check Node.js
+if command -v node &> /dev/null; then
+    echo -e "${GREEN}✓${NC} Node.js $(node -v)"
+else
+    echo -e "${RED}✗${NC} Node.js not found"
+    HEALTH_CHECK_PASSED=false
+fi
+
+# Check installation directory
+if [ -d "$INSTALL_DIR" ]; then
+    echo -e "${GREEN}✓${NC} Installation directory: $INSTALL_DIR"
+else
+    echo -e "${RED}✗${NC} Installation directory missing"
+    HEALTH_CHECK_PASSED=false
+fi
+
+# Check executables
+for script in terminal-optimizer.js lumen-daemon.js status.sh; do
+    if [ -x "$INSTALL_DIR/$script" ]; then
+        echo -e "${GREEN}✓${NC} $script is executable"
+    else
+        echo -e "${YELLOW}⚠${NC} $script not executable"
+    fi
+done
+
+# Check environment variable
+if grep -q "LUMENBRIDGE_URL" "$HOME/.bashrc" 2>/dev/null || \
+   grep -q "LUMENBRIDGE_URL" "$HOME/.zshrc" 2>/dev/null || \
+   grep -q "LUMENBRIDGE_URL" "$HOME/.config/fish/config.fish" 2>/dev/null; then
+    echo -e "${GREEN}✓${NC} Environment configured"
+else
+    echo -e "${YELLOW}⚠${NC} Environment may need manual configuration"
+fi
+
+# Check daemon if installed
+if systemctl is-active --quiet lumen-daemon 2>/dev/null; then
+    echo -e "${GREEN}✓${NC} Lumen daemon is running"
+elif systemctl list-unit-files | grep -q lumen-daemon 2>/dev/null; then
+    echo -e "${YELLOW}⚠${NC} Lumen daemon installed but not running"
+fi
+
+echo ""
+if [ "$HEALTH_CHECK_PASSED" = true ]; then
+    echo -e "${GREEN}✅ All health checks passed!${NC}"
+else
+    echo -e "${YELLOW}⚠️  Some checks failed. Review above for details.${NC}"
+fi
+echo ""
+
 echo -e "Run a quick check: ${GREEN}cd $INSTALL_DIR && node lumen-daemon.js check${NC}"
+echo -e "Uninstall anytime: ${CYAN}$INSTALL_DIR/uninstall.sh${NC}"
 echo ""
 # Force cache update
