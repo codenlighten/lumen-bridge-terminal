@@ -107,6 +107,7 @@ chmod +x terminal-optimizer.js lumen-daemon.js install-daemon.sh status.sh examp
 # Install tree if not present
 if ! command -v tree &> /dev/null; then
     echo -e "${BLUE}📦 Installing tree utility...${NC}"
+    sudo apt-get update -qq
     sudo apt-get install -y tree
 fi
 
