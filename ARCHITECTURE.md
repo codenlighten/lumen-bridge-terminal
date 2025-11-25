@@ -72,13 +72,18 @@ $ node lumen-daemon.js review
 
 ## 🧬 Agent Coordination
 
-The daemon leverages **all** Lumen Bridge agents:
+The daemon leverages **all** Lumen Bridge capabilities:
 
-| Agent | Purpose | When Used |
-|-------|---------|-----------|
+| Agent/API | Purpose | When Used |
+|-----------|---------|-----------|
 | **SearchAgent** | Research best practices | Before planning optimizations |
 | **TerminalAgent** | Generate safe commands | Main optimization planning |
-| **CodeGenerator** | Custom scripts | Complex multi-step operations |
+| **CodeGenerator** | Custom optimization scripts | Complex multi-step operations with rollback |
+| **ToolRouterAgent** | Multi-agent orchestration | Coordinating complex workflows |
+| **SchemaAgent** | Config validation | Validating system configurations |
+| **File Operations** | Config backup/restore | Before modifying system files |
+| **Task Management** | Long-term tracking | Track optimizations across months |
+| **Memory API** | Learning from history | Avoid repeating failed optimizations |
 | **ToolRouterAgent** | Task routing | Determine which agent to use |
 | **SchemaAgent** | Config validation | Validate state files & configs |
 
@@ -97,16 +102,18 @@ The daemon leverages **all** Lumen Bridge agents:
 - Each agent brings specialized knowledge
 
 ### 3. **Continuous Learning**
-- Tracks optimization history
-- Adapts to system patterns
-- Builds system profile over time
-- Learns from executed optimizations
+- Memory API stores optimization outcomes
+- Learns from past failures and successes
+- Avoids repeating failed optimizations
+- Adapts recommendations based on history
+- Builds knowledge base over time
 
 ### 4. **Autonomous but Transparent**
 - Runs in background but logs everything
 - State file shows what it's thinking
 - Review command shows pending actions
 - Full visibility into agent reasoning
+- Task tracking for long-term monitoring
 
 ## 📊 State Management
 

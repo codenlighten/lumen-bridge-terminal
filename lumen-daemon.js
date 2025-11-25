@@ -123,12 +123,163 @@ class LumenDaemon {
 
   async planOptimization(task, context) {
     await this.log(`Planning: "${task.substring(0, 50)}..."`);
-    return await this.callAgent('terminal', { task, context });
+    
+    // Use CodeGenerator to create custom optimization script
+    const codeGenResult = await this.callAgent('code-generator', {
+      prompt: `Create a safe, idempotent bash script for: ${task}
+
+Requirements:
+- Include error handling with set -e
+- Add rollback functionality
+- Backup modified files before changes
+- Validate before and after execution
+- Log all actions to syslog
+- Target: ${context.shell || 'bash'} on ${context.os || 'linux'}`,
+      language: 'bash',
+      context: { systemInfo: this.state.systemProfile },
+    });
+
+    // Also get terminal command analysis
+    const terminalResult = await this.callAgent('terminal', { task, context });
+
+    await this.log('✨ Generated custom script via CodeGenerator');
+
+    return {
+      ...terminalResult,
+      generatedScript: codeGenResult.code,
+      scriptExplanation: codeGenResult.explanation,
+      scriptPath: codeGenResult.suggestedFilename,
+    };
   }
 
   async generateCode(prompt, context) {
     await this.log(`Generating code: "${prompt.substring(0, 50)}..."`);
     return await this.callAgent('code', { prompt, context });
+  }
+
+  async backupConfigFile(filePath, reason) {
+    await this.log(`📁 Backing up ${filePath}: ${reason}`);
+    
+    try {
+      // Use File Operations API to safely backup
+      const readResult = await this.callAgent('file-operations', {
+        operation: 'read',
+        filePath,
+      });
+
+      const backupPath = `${filePath}.lumen-backup-${Date.now()}`;
+      
+      await this.callAgent('file-operations', {
+        operation: 'write',
+        filePath: backupPath,
+        content: readResult.content,
+      });
+
+      await this.log(`✅ Backup created: ${backupPath}`);
+      return backupPath;
+    } catch (err) {
+      await this.log(`❌ Backup failed: ${err.message}`, 'ERROR');
+      return null;
+    }
+  }
+
+  async storeOptimizationMemory(optimization, outcome) {
+    await this.log('🧠 Storing optimization in memory...');
+    
+    try {
+      await this.callAgent('memory', {
+        operation: 'store',
+        userId: 'system',
+        key: `optimization-${optimization.type}-${Date.now()}`,
+        value: {
+          description: optimization.description,
+          command: optimization.plan?.command,
+          outcome,
+          timestamp: Date.now(),
+          systemProfile: this.state.systemProfile,
+          success: outcome.success,
+          errorMessage: outcome.error,
+        },
+        metadata: {
+          category: 'system-optimization',
+          type: optimization.type,
+          severity: optimization.severity,
+        },
+      });
+
+      await this.log('✅ Memory stored for learning');
+    } catch (err) {
+      await this.log(`⚠️  Memory storage failed: ${err.message}`, 'WARN');
+    }
+  }
+
+  async checkPastOptimizations(type) {
+    await this.log(`🔍 Checking past ${type} optimizations...`);
+    
+    try {
+      const memories = await this.callAgent('memory', {
+        operation: 'query',
+        userId: 'system',
+        filter: { category: 'system-optimization', type },
+        limit: 10,
+      });
+
+      if (memories.results && memories.results.length > 0) {
+        const recentFailures = memories.results.filter(m => !m.value.success);
+        if (recentFailures.length > 0) {
+          await this.log(`⚠️  Found ${recentFailures.length} past failures for ${type}`, 'WARN');
+          return { hasFailures: true, failures: recentFailures };
+        }
+      }
+
+      return { hasFailures: false };
+    } catch (err) {
+      await this.log(`⚠️  Memory query failed: ${err.message}`, 'WARN');
+      return { hasFailures: false };
+    }
+  }
+
+  async createOptimizationTask(optimization) {
+    await this.log('📝 Creating task for long-term tracking...');
+    
+    try {
+      const task = await this.callAgent('tasks', {
+        operation: 'create',
+        userId: 'system',
+        title: optimization.description,
+        description: `${optimization.suggestion}\n\nType: ${optimization.type}\nSeverity: ${optimization.severity}`,
+        status: 'pending',
+        priority: optimization.severity === 'high' ? 'high' : 'medium',
+        metadata: {
+          category: 'system-optimization',
+          type: optimization.type,
+          command: optimization.plan?.command,
+          requiresSudo: optimization.plan?.requiresSudo,
+        },
+      });
+
+      await this.log(`✅ Task created: ${task.taskId}`);
+      return task.taskId;
+    } catch (err) {
+      await this.log(`⚠️  Task creation failed: ${err.message}`, 'WARN');
+      return null;
+    }
+  }
+
+  async updateTaskStatus(taskId, status, outcome) {
+    try {
+      await this.callAgent('tasks', {
+        operation: 'update',
+        userId: 'system',
+        taskId,
+        status,
+        metadata: { outcome, completedAt: Date.now() },
+      });
+
+      await this.log(`✅ Task ${taskId} updated to ${status}`);
+    } catch (err) {
+      await this.log(`⚠️  Task update failed: ${err.message}`, 'WARN');
+    }
   }
 
   async detectOptimizationOpportunities() {
@@ -206,9 +357,44 @@ class LumenDaemon {
     }
 
     await this.log(`🚀 Executing: ${optimization.description}`);
-    // Execute the optimization
-    // This would integrate with the terminal-optimizer pattern
-    return true;
+    
+    const outcome = { success: false, output: '', error: null };
+
+    try {
+      // Backup any config files that might be modified
+      if (optimization.plan?.command?.includes('/etc/')) {
+        const configMatch = optimization.plan.command.match(/\/etc\/[\w\/.-]+/);
+        if (configMatch) {
+          await this.backupConfigFile(configMatch[0], optimization.description);
+        }
+      }
+
+      // Execute the optimization (would integrate with terminal-optimizer pattern)
+      const command = optimization.plan?.command || optimization.suggestion;
+      const result = await this.execSafe(command);
+      
+      outcome.success = true;
+      outcome.output = result;
+      await this.log(`✅ Execution completed successfully`);
+
+    } catch (error) {
+      outcome.error = error.message;
+      await this.log(`❌ Execution failed: ${error.message}`, 'ERROR');
+    }
+
+    // Store the outcome in memory for learning
+    await this.storeOptimizationMemory(optimization, outcome);
+
+    // Update the task status
+    if (optimization.taskId) {
+      await this.updateTaskStatus(
+        optimization.taskId,
+        outcome.success ? 'completed' : 'failed',
+        outcome
+      );
+    }
+
+    return outcome.success;
   }
 
   async runMaintenanceCycle() {
@@ -233,12 +419,19 @@ class LumenDaemon {
       for (const opp of opportunities) {
         await this.log(`📋 Opportunity: ${opp.description} (${opp.severity})`);
         
+        // Check if we've tried this before and failed
+        const pastAttempts = await this.checkPastOptimizations(opp.type);
+        if (pastAttempts.hasFailures) {
+          await this.log(`⚠️  Skipping ${opp.type} - ${pastAttempts.failures.length} past failures`, 'WARN');
+          continue;
+        }
+
         // Use SearchAgent to find best practices
         const searchResult = await this.searchBestPractices(
           `Ubuntu ${opp.type} optimization best practices`
         );
 
-        // Use TerminalAgent to plan the fix
+        // Use TerminalAgent + CodeGenerator to plan the fix with custom script
         const plan = await this.planOptimization(
           `${opp.suggestion}. System context: ${JSON.stringify(profile)}`,
           { shell: 'bash', os: 'linux' }
@@ -246,6 +439,17 @@ class LumenDaemon {
 
         await this.log(`💡 Suggested: ${plan.terminalCommand.substring(0, 100)}...`);
         await this.log(`⚠️  Risk: ${plan.riskLevel} | Sudo: ${plan.requiresSudo}`);
+        
+        if (plan.generatedScript) {
+          await this.log(`📜 Custom script generated (${plan.scriptPath || 'optimize.sh'})`);
+        }
+
+        // Create a tracked task for long-term monitoring
+        const taskId = await this.createOptimizationTask({
+          ...opp,
+          suggestion: opp.suggestion,
+          plan,
+        });
 
         // Store for user review
         this.state.optimizations.push({
@@ -253,10 +457,14 @@ class LumenDaemon {
           searchInsights: searchResult.finalAnswer?.substring(0, 200),
           plan: {
             command: plan.terminalCommand,
+            script: plan.generatedScript,
+            scriptPath: plan.scriptPath,
+            explanation: plan.scriptExplanation,
             reasoning: plan.reasoning,
             riskLevel: plan.riskLevel,
             requiresSudo: plan.requiresSudo,
           },
+          taskId,
           status: 'pending',
           timestamp: Date.now(),
         });

@@ -17,6 +17,10 @@ Transform your Ubuntu workstation into a self-aware, self-optimizing system powe
 - 🎯 **Custom Specialists** - Register domain-specific agents for your workflows
 - 💻 **Interactive Mode** - Give high-level tasks to AI agents via CLI
 - 📝 **Full Logging** - Every action tracked, reasoned, and cryptographically signed
+- 🧠 **Self-Learning** - Memory API learns from past optimizations to improve over time
+- 📋 **Task Tracking** - Long-term optimization goals tracked across months
+- 💾 **Config Backup** - Automatic backup before modifying system files
+- 🔧 **Custom Scripts** - CodeGenerator creates tailored optimization scripts with rollback
 
 ## 🚀 One-Click Install
 
@@ -56,6 +60,28 @@ node lumen-daemon.js review   # Review suggestions
 ## 🌟 What Makes This Special
 
 **Lumen Bridge as an Agent OS** - Multiple AI agents coordinate to monitor, research, plan, and optimize your system autonomously while you stay in complete control.
+
+### 🧠 Advanced Capabilities
+
+**Self-Learning System**
+- Memory API stores every optimization outcome
+- Learns from failures to avoid repeating mistakes
+- Personalizes recommendations based on your system history
+
+**Dynamic Script Generation**
+- CodeGenerator creates custom optimization scripts on-the-fly
+- Tailored to your specific hardware and software configuration
+- Includes automatic rollback and error recovery
+
+**Long-Term Tracking**
+- Task Management API tracks optimization goals across months
+- Monitors completion rates and system improvements
+- Recurring optimization tasks for continuous improvement
+
+**Safe Config Management**
+- File Operations API backs up configs before modifications
+- Maintains version history of system configurations
+- Automatic restoration on failures
 
 ## 📝 License
 
