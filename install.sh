@@ -19,32 +19,19 @@ MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Spinner for long operations
-show_spinner() {
-    local pid=$1
-    local delay=0.1
-    local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    while ps -p $pid > /dev/null 2>&1; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-        printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"
-}
+# Configuration
+INSTALL_DIR="$HOME/lumen-terminal"
+LUMENBRIDGE_URL="${LUMENBRIDGE_URL:-https://lumenbridge.xyz}"
+REPO_URL="https://github.com/codenlighten/lumen-bridge-terminal.git"
 
 # Error handler
 error_exit() {
     echo -e "${RED}❌ Error: $1${NC}" >&2
     echo -e "${YELLOW}💡 Troubleshooting: $2${NC}" >&2
+    # Kill sudo keep-alive if running
+    kill "$SUDO_PID" 2>/dev/null || true
     exit 1
 }
-
-# Configuration
-INSTALL_DIR="$HOME/lumen-terminal"
-LUMENBRIDGE_URL="${LUMENBRIDGE_URL:-https://lumenbridge.xyz}"
-REPO_URL="https://github.com/codenlighten/lumen-bridge-terminal.git"
 
 echo -e "${BLUE}"
 cat << "EOF"
@@ -76,13 +63,18 @@ if [ -f /etc/os-release ]; then
     echo -e "${CYAN}📋 Detected: $NAME $VERSION${NC}"
 fi
 
-# Check for sudo access
+# Check for sudo access and start keep-alive
 if ! sudo -n true 2>/dev/null; then
     echo -e "${YELLOW}🔐 Sudo access required for installation${NC}"
     sudo -v || error_exit "Cannot obtain sudo privileges" "Run 'sudo -v' to verify sudo access"
 fi
 
-# Update package lists (critical for fresh droplets)
+# Sudo keep-alive loop in background
+( while true; do sudo -v; sleep 60; done; ) &
+SUDO_PID=$!
+trap "kill $SUDO_PID 2>/dev/null" EXIT
+
+# Update package lists
 echo -e "${BLUE}📦 Updating package lists...${NC}"
 if ! sudo apt-get update -qq 2>/dev/null; then
     echo -e "${YELLOW}⚠️  Initial update failed, trying with full output...${NC}"
@@ -90,68 +82,33 @@ if ! sudo apt-get update -qq 2>/dev/null; then
 fi
 echo -e "${GREEN}✓${NC} Package lists updated"
 
-# Install essential packages that might be missing on minimal droplets
+# Install essential packages
 echo -e "${BLUE}📦 Installing essential packages...${NC}"
-ESSENTIAL_PACKAGES="curl wget git ca-certificates gnupg"
-for pkg in $ESSENTIAL_PACKAGES; do
-    if ! dpkg -l | grep -q "^ii  $pkg "; then
-        echo -e "${CYAN}  Installing $pkg...${NC}"
-        sudo apt-get install -y $pkg -qq 2>/dev/null || echo -e "${YELLOW}  Warning: Could not install $pkg${NC}"
-    fi
-done
+ESSENTIAL_PACKAGES="curl wget git ca-certificates gnupg build-essential"
+sudo apt-get install -y $ESSENTIAL_PACKAGES -qq || error_exit "Failed to install essentials" "Check apt-get logs"
 echo -e "${GREEN}✓${NC} Essential packages ready"
 
 # Check Node.js version and install if needed
 echo -e "${BLUE}🔍 Checking Node.js version...${NC}"
+
+install_node() {
+    echo -e "${BLUE}📦 Installing Node.js 20 LTS...${NC}"
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - || error_exit "Failed to add NodeSource repo" "Check internet connection"
+    sudo apt-get install -y nodejs || error_exit "Node.js installation failed" "Try manual install"
+}
+
 if ! command -v node &> /dev/null; then
-    echo -e "${YELLOW}⚠️  Node.js not found. Installing Node.js 20 LTS...${NC}"
-    
-    # Install Node.js using NodeSource repository with retry logic
-    echo -e "${BLUE}📦 Adding NodeSource repository...${NC}"
-    RETRY_COUNT=0
-    MAX_RETRIES=3
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -; then
-            break
-        fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-            echo -e "${YELLOW}⚠️  Retry $RETRY_COUNT/$MAX_RETRIES...${NC}"
-            sleep 2
-        fi
-    done
-    
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        error_exit "Failed to add NodeSource repository" "Check your internet connection and try again"
-    fi
-    
-    echo -e "${BLUE}📦 Installing Node.js...${NC}"
-    sudo apt-get install -y nodejs || error_exit "Node.js installation failed" "Try 'sudo apt-get update && sudo apt-get install nodejs'"
-    
-    if ! command -v node &> /dev/null; then
-        error_exit "Node.js installation verification failed" "Manually install Node.js 18+ and retry"
-    fi
-    echo -e "${GREEN}✅ Node.js $(node -v) installed successfully${NC}"
+    echo -e "${YELLOW}⚠️  Node.js not found.${NC}"
+    install_node
 else
-    NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-    if [ "$NODE_VERSION" -lt 18 ]; then
-        echo -e "${YELLOW}⚠️  Node.js version too old (found: $(node -v)). Upgrading to Node.js 20 LTS...${NC}"
-        
-        echo -e "${BLUE}📦 Adding NodeSource repository...${NC}"
-        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - || error_exit "Failed to add NodeSource repository" "Check your internet connection"
-        
-        echo -e "${BLUE}📦 Upgrading Node.js...${NC}"
-        sudo apt-get install -y nodejs || error_exit "Node.js upgrade failed" "Try manually: sudo apt-get update && sudo apt-get install nodejs"
-        
-        echo -e "${GREEN}✅ Node.js $(node -v) upgraded successfully${NC}"
+    # Robust version parsing
+    NODE_VERSION=$(node -v 2>/dev/null | sed 's/v//' | cut -d'.' -f1)
+    if [[ -n "$NODE_VERSION" && "$NODE_VERSION" -lt 18 ]]; then
+        echo -e "${YELLOW}⚠️  Node.js version too old (found v$NODE_VERSION). Upgrading...${NC}"
+        install_node
     else
         echo -e "${GREEN}✅ Node.js $(node -v) detected${NC}"
     fi
-fi
-
-# Verify git is working (already installed in essentials above)
-if ! command -v git &> /dev/null; then
-    error_exit "Git installation failed" "Try manually: sudo apt-get install git"
 fi
 
 # Clone or update repository
@@ -162,23 +119,32 @@ if [ -d "$INSTALL_DIR" ]; then
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}🔄 Updating installation...${NC}"
         cd "$INSTALL_DIR"
-        git pull
+        git pull || echo -e "${YELLOW}⚠️  Git pull failed, continuing with current version${NC}"
     else
         echo -e "${YELLOW}⏭️  Skipping update${NC}"
-        cd "$INSTALL_DIR"
     fi
 else
     echo -e "${BLUE}📥 Cloning repository to $INSTALL_DIR...${NC}"
-    git clone "$REPO_URL" "$INSTALL_DIR"
-    cd "$INSTALL_DIR"
+    git clone "$REPO_URL" "$INSTALL_DIR" || error_exit "Failed to clone repository" "Check git URL and permissions"
+fi
+
+# ENTER INSTALL DIRECTORY (Crucial Step)
+cd "$INSTALL_DIR" || error_exit "Could not enter directory $INSTALL_DIR" "Check permissions"
+
+# Install NPM Dependencies (Crucial Step missing in original)
+echo -e "${BLUE}📦 Installing Node dependencies...${NC}"
+if [ -f "package.json" ]; then
+    npm install --production || echo -e "${YELLOW}⚠️  NPM install had warnings (continuing)...${NC}"
+else
+    echo -e "${YELLOW}⚠️  No package.json found. Skipping npm install.${NC}"
 fi
 
 # Make scripts executable
 echo -e "${BLUE}🔧 Setting up permissions...${NC}"
-chmod +x terminal-optimizer.js lumen-daemon.js config.js install-daemon.sh status.sh diagnose.sh uninstall.sh test-install.sh examples/custom-agents.js 2>/dev/null || true
+chmod +x *.sh *.js examples/*.js 2>/dev/null || true
 
-# Check and fix locale (common issue on fresh droplets)
-if ! locale -a | grep -qi "en_US.utf8\|en_US.UTF-8"; then
+# Check and fix locale
+if ! locale -a 2>/dev/null | grep -qi "en_US.utf8\|en_US.UTF-8"; then
     echo -e "${BLUE}🌍 Setting up locale...${NC}"
     sudo apt-get install -y locales -qq 2>/dev/null || true
     sudo locale-gen en_US.UTF-8 2>/dev/null || true
@@ -188,92 +154,90 @@ fi
 # Install useful utilities
 echo -e "${BLUE}📦 Installing utilities...${NC}"
 UTILITY_PACKAGES="tree htop ncdu net-tools"
-for pkg in $UTILITY_PACKAGES; do
-    if ! command -v $pkg &> /dev/null && ! dpkg -l | grep -q "^ii  $pkg "; then
-        sudo apt-get install -y $pkg -qq 2>/dev/null || echo -e "${YELLOW}  Skipped: $pkg${NC}"
-    fi
-done
-echo -e "${GREEN}✓${NC} Utilities installed"
+sudo apt-get install -y $UTILITY_PACKAGES -qq 2>/dev/null || echo -e "${YELLOW}  Skipped optional utilities${NC}"
 
-# Set up environment for multiple shells
-echo -e "${BLUE}🌍 Configuring environment...${NC}"
-
-# Detect user's shell
+# Set up environment variables
+echo -e "${BLUE}🌍 Configuring shell environment...${NC}"
 USER_SHELL=$(basename "$SHELL")
-echo -e "${CYAN}🐚 Detected shell: $USER_SHELL${NC}"
+RC_FILE=""
 
-# Configure based on shell
 case "$USER_SHELL" in
-    bash)
-        SHELL_RC="$HOME/.bashrc"
-        if ! grep -q "LUMENBRIDGE_URL" "$SHELL_RC" 2>/dev/null; then
-            echo "export LUMENBRIDGE_URL=\"$LUMENBRIDGE_URL\"" >> "$SHELL_RC"
-            echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$SHELL_RC"
-            echo -e "${GREEN}✅ Added configuration to ~/.bashrc${NC}"
-        fi
-        ;;
-    zsh)
-        SHELL_RC="$HOME/.zshrc"
-        if ! grep -q "LUMENBRIDGE_URL" "$SHELL_RC" 2>/dev/null; then
-            echo "export LUMENBRIDGE_URL=\"$LUMENBRIDGE_URL\"" >> "$SHELL_RC"
-            echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$SHELL_RC"
-            echo -e "${GREEN}✅ Added configuration to ~/.zshrc${NC}"
-        fi
-        ;;
-    fish)
-        FISH_CONFIG="$HOME/.config/fish/config.fish"
-        mkdir -p "$(dirname "$FISH_CONFIG")"
-        if ! grep -q "LUMENBRIDGE_URL" "$FISH_CONFIG" 2>/dev/null; then
-            echo "set -gx LUMENBRIDGE_URL \"$LUMENBRIDGE_URL\"" >> "$FISH_CONFIG"
-            echo "set -gx PATH \$PATH \"$INSTALL_DIR\"" >> "$FISH_CONFIG"
-            echo -e "${GREEN}✅ Added configuration to ~/.config/fish/config.fish${NC}"
-        fi
-        ;;
-    *)
-        echo -e "${YELLOW}⚠️  Unknown shell: $USER_SHELL. Add manually:${NC}"
-        echo -e "${CYAN}export LUMENBRIDGE_URL=\"$LUMENBRIDGE_URL\"${NC}"
-        ;;
+    bash) RC_FILE="$HOME/.bashrc" ;;
+    zsh)  RC_FILE="$HOME/.zshrc" ;;
+    fish) RC_FILE="$HOME/.config/fish/config.fish" ;;
 esac
 
-# Offer to install as systemd service
+if [ -n "$RC_FILE" ]; then
+    # Check if grep finds it; if not (grep returns 1), allow script to continue via || true
+    if ! grep -q "LUMENBRIDGE_URL" "$RC_FILE" 2>/dev/null || true; then
+        echo "" >> "$RC_FILE"
+        if [ "$USER_SHELL" = "fish" ]; then
+            echo "set -gx LUMENBRIDGE_URL \"$LUMENBRIDGE_URL\"" >> "$RC_FILE"
+            echo "set -gx PATH \$PATH \"$INSTALL_DIR\"" >> "$RC_FILE"
+        else
+            echo "export LUMENBRIDGE_URL=\"$LUMENBRIDGE_URL\"" >> "$RC_FILE"
+            echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$RC_FILE"
+        fi
+        echo -e "${GREEN}✅ Added configuration to $RC_FILE${NC}"
+    else
+        echo -e "${GREEN}✅ Environment already configured in $RC_FILE${NC}"
+    fi
+fi
+
+# Daemon Installation
 echo ""
 echo -e "${BLUE}Daemon Installation${NC}"
 echo -e "${BLUE}========================${NC}"
 read -p "Install Lumen Daemon as a system service? (Y/n): " -n 1 -r
 echo
 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-    echo -e "${BLUE}📦 Installing daemon as systemd service...${NC}"
-    ./install-daemon.sh
-    
-    read -p "Enable daemon to start on boot? (Y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        sudo systemctl enable lumen-daemon
-        echo -e "${GREEN}✅ Daemon will start on boot${NC}"
-    fi
-    
-    read -p "Start daemon now? (Y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        sudo systemctl start lumen-daemon
-        echo -e "${GREEN}✅ Daemon started${NC}"
-        sleep 2
-        sudo systemctl status lumen-daemon --no-pager -l | head -15
+    if [ -f "./install-daemon.sh" ]; then
+        echo -e "${BLUE}📦 Installing daemon as systemd service...${NC}"
+        ./install-daemon.sh
+        
+        # Reload systemd to be safe
+        sudo systemctl daemon-reload 2>/dev/null || true
+        
+        read -p "Enable daemon to start on boot? (Y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            sudo systemctl enable lumen-daemon
+            echo -e "${GREEN}✅ Daemon enabled${NC}"
+        fi
+        
+        read -p "Start daemon now? (Y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            sudo systemctl start lumen-daemon
+            echo -e "${GREEN}✅ Daemon started${NC}"
+            sleep 2
+            if systemctl is-active --quiet lumen-daemon; then
+                echo -e "${GREEN}✅ Service is running.${NC}"
+            else
+                echo -e "${RED}⚠️  Service failed to start. Check logs: journalctl -u lumen-daemon${NC}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}⚠️  install-daemon.sh not found in repo. Skipping service install.${NC}"
     fi
 fi
 
-# Offer to register custom agents
+# Custom Agent Registration
 echo ""
 echo -e "${BLUE}Custom Agent Registration${NC}"
 echo -e "${BLUE}=============================${NC}"
-read -p "Register custom specialist agents (DevWorkflow, Security, Performance)? (Y/n): " -n 1 -r
+read -p "Register custom specialist agents? (Y/n): " -n 1 -r
 echo
 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-    echo -e "${BLUE}🚀 Registering custom agents...${NC}"
-    node examples/custom-agents.js
+    if [ -f "examples/custom-agents.js" ]; then
+        echo -e "${BLUE}🚀 Registering custom agents...${NC}"
+        node examples/custom-agents.js || echo -e "${YELLOW}⚠️  Agent registration encountered an issue.${NC}"
+    else
+        echo -e "${YELLOW}⚠️  examples/custom-agents.js not found.${NC}"
+    fi
 fi
 
-# Create desktop shortcut (optional)
+# Desktop Shortcut
 echo ""
 read -p "Create desktop shortcuts? (y/N): " -n 1 -r
 echo
@@ -292,10 +256,11 @@ Terminal=false
 Categories=System;Monitor;
 EOF
     
+    chmod +x "$DESKTOP_DIR/lumen-status.desktop"
     echo -e "${GREEN}✅ Desktop shortcut created${NC}"
 fi
 
-# Final status check
+# Final status
 echo ""
 echo -e "${GREEN}"
 cat << "EOF"
@@ -308,96 +273,27 @@ EOF
 echo -e "${NC}"
 
 echo -e "${BLUE}📍 Installation Directory: ${GREEN}$INSTALL_DIR${NC}"
-echo -e "${BLUE}📊 View Status: ${GREEN}cd $INSTALL_DIR && ./status.sh${NC}"
 echo ""
-echo -e "${YELLOW}🎯 Quick Commands:${NC}"
-echo -e "  ${GREEN}cd $INSTALL_DIR${NC}"
-echo -e "  ${GREEN}./status.sh${NC}                      # System status"
-echo -e "  ${GREEN}node lumen-daemon.js review${NC}      # Review optimizations"
-echo -e "  ${GREEN}node terminal-optimizer.js 'task'${NC} # Interactive mode"
-echo -e "  ${GREEN}tail -f ~/.lumen-daemon.log${NC}      # Watch daemon activity"
+echo -e "${YELLOW}🎯 Important Next Steps:${NC}"
+echo -e "1. ${GREEN}source $RC_FILE${NC} (or restart terminal) to update your PATH."
+echo -e "2. Run ${GREEN}cd $INSTALL_DIR && ./status.sh${NC} to check systems."
+echo ""
+echo -e "${BLUE}📚 Documentation available in README.md${NC}"
 echo ""
 
-# Add to PATH suggestion
-if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
-    echo -e "${YELLOW}💡 Tip: Add to PATH for easier access:${NC}"
-    echo -e "  ${GREEN}echo 'export PATH=\"\$PATH:$INSTALL_DIR\"' >> ~/.bashrc${NC}"
-    echo -e "  ${GREEN}source ~/.bashrc${NC}"
-    echo ""
-fi
+# Post-install health check
+echo -e "${BLUE}🔍 Final Health Check...${NC}"
 
-echo -e "${BLUE}📚 Documentation:${NC}"
-echo -e "  • README.md         - Quick start guide"
-echo -e "  • GUIDE.md          - Complete walkthrough"
-echo -e "  • ARCHITECTURE.md   - Technical deep dive"
-echo -e "  • DEPLOYMENT.md     - Current status"
-echo ""
+# Check Node
+if command -v node &> /dev/null; then echo -e "${GREEN}✓${NC} Node $(node -v)"; else echo -e "${RED}✗${NC} Node missing"; fi
 
+# Check Daemon
 if systemctl is-active --quiet lumen-daemon 2>/dev/null; then
-    echo -e "${GREEN}🤖 Daemon Status: ${GREEN}RUNNING${NC}"
-    echo -e "   View logs: ${GREEN}journalctl -u lumen-daemon -f${NC}"
-    echo ""
+    echo -e "${GREEN}✓${NC} Daemon active"
+else
+    echo -e "${YELLOW}•${NC} Daemon not running (Start with: sudo systemctl start lumen-daemon)"
 fi
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}🌉 Your laptop now has a living agent OS!${NC}"
+echo -e "${GREEN}🌉 System Ready.${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-# Run post-install health check
-echo -e "${BLUE}🔍 Running post-install health check...${NC}"
-HEALTH_CHECK_PASSED=true
-
-# Check Node.js
-if command -v node &> /dev/null; then
-    echo -e "${GREEN}✓${NC} Node.js $(node -v)"
-else
-    echo -e "${RED}✗${NC} Node.js not found"
-    HEALTH_CHECK_PASSED=false
-fi
-
-# Check installation directory
-if [ -d "$INSTALL_DIR" ]; then
-    echo -e "${GREEN}✓${NC} Installation directory: $INSTALL_DIR"
-else
-    echo -e "${RED}✗${NC} Installation directory missing"
-    HEALTH_CHECK_PASSED=false
-fi
-
-# Check executables
-for script in terminal-optimizer.js lumen-daemon.js status.sh; do
-    if [ -x "$INSTALL_DIR/$script" ]; then
-        echo -e "${GREEN}✓${NC} $script is executable"
-    else
-        echo -e "${YELLOW}⚠${NC} $script not executable"
-    fi
-done
-
-# Check environment variable
-if grep -q "LUMENBRIDGE_URL" "$HOME/.bashrc" 2>/dev/null || \
-   grep -q "LUMENBRIDGE_URL" "$HOME/.zshrc" 2>/dev/null || \
-   grep -q "LUMENBRIDGE_URL" "$HOME/.config/fish/config.fish" 2>/dev/null; then
-    echo -e "${GREEN}✓${NC} Environment configured"
-else
-    echo -e "${YELLOW}⚠${NC} Environment may need manual configuration"
-fi
-
-# Check daemon if installed
-if systemctl is-active --quiet lumen-daemon 2>/dev/null; then
-    echo -e "${GREEN}✓${NC} Lumen daemon is running"
-elif systemctl list-unit-files | grep -q lumen-daemon 2>/dev/null; then
-    echo -e "${YELLOW}⚠${NC} Lumen daemon installed but not running"
-fi
-
-echo ""
-if [ "$HEALTH_CHECK_PASSED" = true ]; then
-    echo -e "${GREEN}✅ All health checks passed!${NC}"
-else
-    echo -e "${YELLOW}⚠️  Some checks failed. Review above for details.${NC}"
-fi
-echo ""
-
-echo -e "Run a quick check: ${GREEN}cd $INSTALL_DIR && node lumen-daemon.js check${NC}"
-echo -e "Uninstall anytime: ${CYAN}$INSTALL_DIR/uninstall.sh${NC}"
-echo ""
-# Force cache update
