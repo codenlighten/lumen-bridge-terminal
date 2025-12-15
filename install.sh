@@ -86,7 +86,7 @@ if [ ! -f "package.json" ]; then
   "version": "1.0.0",
   "description": "Autonomous Agent OS",
   "main": "lumen-daemon.js",
-  "type": "module",
+  "type": "common",
   "scripts": {
     "start": "node lumen-daemon.js",
     "check": "node lumen-daemon.js check",
