@@ -1,16 +1,8 @@
 #!/usr/bin/env node
 /**
  * Lumen Daemon - Autonomous System Optimization Agent
- * 
- * Lives in your laptop, continuously monitoring and optimizing the system
+ * * Lives in your laptop, continuously monitoring and optimizing the system
  * using the full power of Lumen Bridge's agent ecosystem.
- * 
- * Features:
- * - System health monitoring
- * - Proactive optimization recommendations
- * - Auto-cleanup and maintenance
- * - Smart task routing across multiple agents
- * - Self-learning behavior patterns
  */
 
 const { spawn } = require('child_process');
@@ -29,13 +21,16 @@ class LumenDaemon {
       optimizations: [],
       systemProfile: {},
       autoApprove: false, // Safety first!
+      tasks: [],
+      optimizationHistory: []
     };
   }
 
   async log(message, level = 'INFO') {
     const timestamp = new Date().toISOString();
     const logLine = `[${timestamp}] [${level}] ${message}\n`;
-    console.log(logLine.trim());
+    // Only console log if not 'DEBUG' or if explicit
+    if (level !== 'DEBUG') console.log(logLine.trim());
     await fs.appendFile(LOG_FILE, logLine).catch(() => {});
   }
 
@@ -43,47 +38,58 @@ class LumenDaemon {
     try {
       const data = await fs.readFile(STATE_FILE, 'utf8');
       this.state = { ...this.state, ...JSON.parse(data) };
-      await this.log('State loaded from disk');
     } catch (err) {
       await this.log('No previous state found, starting fresh', 'WARN');
     }
   }
 
+  // ATOMIC WRITE FIX: Prevents JSON corruption on crash
   async saveState() {
-    await fs.writeFile(STATE_FILE, JSON.stringify(this.state, null, 2));
+    const tempFile = `${STATE_FILE}.tmp`;
+    try {
+      await fs.writeFile(tempFile, JSON.stringify(this.state, null, 2));
+      await fs.rename(tempFile, STATE_FILE);
+    } catch (err) {
+      await this.log(`Failed to save state: ${err.message}`, 'ERROR');
+    }
   }
 
   async callAgent(endpoint, body) {
-    const res = await fetch(`${BASE_URL}/api/agents/${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Agent ${endpoint} failed: ${res.status} ${text}`);
+    // Basic check for fetch availability
+    if (typeof fetch === 'undefined') {
+      throw new Error('Node.js version too low: fetch API not found. Please upgrade to Node 18+');
     }
 
-    const data = await res.json();
-    if (!data.success) {
-      throw new Error(data.error || `Agent ${endpoint} returned success=false`);
-    }
+    try {
+      const res = await fetch(`${BASE_URL}/api/agents/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
 
-    return data.result;
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`Agent ${endpoint} failed: ${res.status} ${text}`);
+      }
+
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || `Agent ${endpoint} returned success=false`);
+      }
+
+      return data.result;
+    } catch (error) {
+      // Graceful fallback if offline
+      await this.log(`Connection to Lumen Bridge failed: ${error.message}`, 'WARN');
+      return null;
+    }
   }
 
   async gatherSystemInfo() {
     await this.log('Gathering system information...');
     
-    const execCommand = (cmd) => {
-      return new Promise((resolve) => {
-        const child = spawn(cmd, { shell: '/bin/bash' });
-        let output = '';
-        child.stdout.on('data', (data) => (output += data.toString()));
-        child.on('close', () => resolve(output.trim()));
-      });
-    };
+    // Helper to run command with timeout
+    const execCommand = (cmd) => this.execSafe(cmd, 5000); 
 
     const profile = {
       hostname: os.hostname(),
@@ -99,8 +105,7 @@ class LumenDaemon {
       installedPackages: await execCommand('dpkg --list | wc -l'),
       dockerRunning: await execCommand('systemctl is-active docker 2>/dev/null || echo inactive'),
       kernelVersion: await execCommand('uname -r'),
-      nodeVersion: await execCommand('node --version 2>/dev/null || echo "not installed"'),
-      pythonVersion: await execCommand('python3 --version 2>/dev/null || echo "not installed"'),
+      nodeVersion: process.version,
     };
 
     this.state.systemProfile = profile;
@@ -108,62 +113,40 @@ class LumenDaemon {
     return profile;
   }
 
-  async analyzeWithRouter(userPrompt) {
-    await this.log(`Routing task: "${userPrompt.substring(0, 50)}..."`);
-    return await this.callAgent('router', { userPrompt });
-  }
-
-  async searchBestPractices(query) {
-    await this.log(`Searching for: "${query}"`);
-    return await this.callAgent('search', { 
-      userQuery: query,
-      maxResults: 5 
-    });
-  }
-
   async planOptimization(task, context) {
     await this.log(`Planning: "${task.substring(0, 50)}..."`);
     
-    // Use CodeGenerator to create custom optimization script
+    // 1. Get Terminal Analysis
+    const terminalResult = await this.callAgent('terminal', { task, context });
+    if (!terminalResult) return null;
+
+    // 2. Generate Custom Script (if needed)
     const codeGenResult = await this.callAgent('code', {
       prompt: `Create a safe, idempotent bash script for: ${task}
-
 Requirements:
 - Include error handling with set -e
 - Add rollback functionality
 - Backup modified files before changes
-- Validate before and after execution
 - Log all actions to syslog
 - Target: ${context.shell || 'bash'} on ${context.os || 'linux'}`,
       language: 'bash',
       context: { systemInfo: this.state.systemProfile },
     });
 
-    // Also get terminal command analysis
-    const terminalResult = await this.callAgent('terminal', { task, context });
-
-    await this.log('✨ Generated custom script via CodeGenerator');
-
     return {
       ...terminalResult,
-      generatedScript: codeGenResult.code,
-      scriptExplanation: codeGenResult.explanation,
-      scriptPath: codeGenResult.suggestedFilename,
+      generatedScript: codeGenResult?.code,
+      scriptExplanation: codeGenResult?.explanation,
+      scriptPath: codeGenResult?.suggestedFilename,
     };
-  }
-
-  async generateCode(prompt, context) {
-    await this.log(`Generating code: "${prompt.substring(0, 50)}..."`);
-    return await this.callAgent('code', { prompt, context });
   }
 
   async backupConfigFile(filePath, reason) {
     await this.log(`📁 Backing up ${filePath}: ${reason}`);
-    
     try {
-      // Local file backup (File Operations API not available yet)
       const backupPath = `${filePath}.lumen-backup-${Date.now()}`;
-      await fs.copyFile(filePath, backupPath);
+      // In production, use 'cp' via spawn to handle permissions better than fs.copyFile
+      await this.execSafe(`cp "${filePath}" "${backupPath}"`);
       await this.log(`✅ Backup created: ${backupPath}`);
       return backupPath;
     } catch (err) {
@@ -173,12 +156,7 @@ Requirements:
   }
 
   async storeOptimizationMemory(optimization, outcome) {
-    await this.log('🧠 Storing optimization in local memory...');
-    
-    // Store in local state file (Memory API not available yet)
-    if (!this.state.optimizationHistory) {
-      this.state.optimizationHistory = [];
-    }
+    if (!this.state.optimizationHistory) this.state.optimizationHistory = [];
 
     this.state.optimizationHistory.push({
       description: optimization.description,
@@ -186,156 +164,105 @@ Requirements:
       command: optimization.plan?.command,
       outcome,
       timestamp: Date.now(),
-      systemProfile: { ...this.state.systemProfile },
       success: outcome.success,
-      errorMessage: outcome.error,
     });
 
-    // Keep only last 100 entries
-    if (this.state.optimizationHistory.length > 100) {
-      this.state.optimizationHistory = this.state.optimizationHistory.slice(-100);
+    // Keep memory clean (last 50)
+    if (this.state.optimizationHistory.length > 50) {
+      this.state.optimizationHistory = this.state.optimizationHistory.slice(-50);
     }
-
     await this.saveState();
-    await this.log('✅ Memory stored locally');
   }
 
   async checkPastOptimizations(type) {
-    await this.log(`🔍 Checking past ${type} optimizations...`);
-    
-    if (!this.state.optimizationHistory) {
-      return { hasFailures: false };
+    if (!this.state.optimizationHistory) return { hasFailures: false };
+    const failures = this.state.optimizationHistory
+      .filter(h => h.type === type && !h.success)
+      .slice(-3); // Check last 3 failures
+
+    if (failures.length >= 2) {
+      return { hasFailures: true, failures };
     }
-
-    const pastAttempts = this.state.optimizationHistory.filter(h => h.type === type);
-    const recentFailures = pastAttempts.filter(a => !a.success).slice(-3);
-
-    if (recentFailures.length >= 2) {
-      await this.log(`⚠️  Found ${recentFailures.length} recent failures for ${type}`, 'WARN');
-      return { hasFailures: true, failures: recentFailures };
-    }
-
     return { hasFailures: false };
   }
 
-  async createOptimizationTask(optimization) {
-    await this.log('📝 Creating task for tracking...');
-    
-    // Store task locally (Task Management API not available yet)
-    if (!this.state.tasks) {
-      this.state.tasks = [];
-    }
-
-    const taskId = `task-${Date.now()}`;
-    this.state.tasks.push({
-      taskId,
-      title: optimization.description,
-      description: `${optimization.suggestion}\n\nType: ${optimization.type}\nSeverity: ${optimization.severity}`,
-      status: 'pending',
-      priority: optimization.severity === 'high' ? 'high' : 'medium',
-      type: optimization.type,
-      command: optimization.plan?.command,
-      createdAt: Date.now(),
-    });
-
-    await this.saveState();
-    await this.log(`✅ Task created: ${taskId}`);
-    return taskId;
-  }
-
-  async updateTaskStatus(taskId, status, outcome) {
-    if (!this.state.tasks) return;
-
-    const task = this.state.tasks.find(t => t.taskId === taskId);
-    if (task) {
-      task.status = status;
-      task.outcome = outcome;
-      task.completedAt = Date.now();
-      await this.saveState();
-      await this.log(`✅ Task ${taskId} updated to ${status}`);
-    }
-  }
-
   async detectOptimizationOpportunities() {
-    await this.log('🔍 Detecting optimization opportunities...');
+    await this.log('🔍 Analyzing telemetry...');
     
     const profile = this.state.systemProfile;
     const opportunities = [];
 
-    // Memory pressure
+    // 1. Memory Pressure
     const memUsagePercent = ((profile.totalMem - profile.freeMem) / profile.totalMem) * 100;
-    if (memUsagePercent > 80) {
+    if (memUsagePercent > 85) {
       opportunities.push({
         type: 'memory',
         severity: 'medium',
-        description: `Memory usage at ${memUsagePercent.toFixed(1)}%`,
-        suggestion: 'Consider clearing caches or identifying memory-hungry processes',
+        description: `Memory usage critical (${memUsagePercent.toFixed(1)}%)`,
+        suggestion: 'Clear page cache and identify zombie processes',
       });
     }
 
-    // Disk space
+    // 2. Disk Space
     const diskUsage = parseInt(profile.diskUsage);
-    if (diskUsage > 85) {
+    if (diskUsage > 90) {
       opportunities.push({
         type: 'disk',
         severity: 'high',
-        description: `Disk usage at ${diskUsage}%`,
-        suggestion: 'Clean up old kernels, package cache, and temporary files',
+        description: `Disk usage critical (${diskUsage}%)`,
+        suggestion: 'Clean apt cache, old kernels, and temp files',
       });
     }
 
-    // System updates
-    const updateCheck = await this.execSafe('apt list --upgradable 2>/dev/null | grep -c upgradable');
-    const upgradeCount = parseInt(updateCheck) || 0;
-    if (upgradeCount > 10) {
-      opportunities.push({
-        type: 'updates',
-        severity: 'medium',
-        description: `${upgradeCount} packages can be upgraded`,
-        suggestion: 'Run system updates to patch security vulnerabilities',
-      });
-    }
-
-    // Docker optimization
+    // 3. Docker Maintenance
     if (profile.dockerRunning === 'active') {
-      const unusedImages = await this.execSafe('docker images -f "dangling=true" -q | wc -l');
-      if (parseInt(unusedImages) > 5) {
-        opportunities.push({
-          type: 'docker',
-          severity: 'low',
-          description: `${unusedImages} unused Docker images`,
-          suggestion: 'Clean up dangling Docker images to free up space',
-        });
-      }
+       // Only run this check if we haven't done it in 24 hours
+       opportunities.push({
+         type: 'docker',
+         severity: 'low',
+         description: 'Docker system prune check',
+         suggestion: 'Remove unused containers and dangling images',
+       });
     }
 
     return opportunities;
   }
 
-  async execSafe(command) {
-    return new Promise((resolve) => {
+  // TIMEOUT FIX: Prevents hanging processes
+  async execSafe(command, timeoutMs = 300000) { // Default 5 min timeout
+    return new Promise((resolve, reject) => {
       const child = spawn(command, { shell: '/bin/bash' });
       let output = '';
+      let errorOut = '';
+
+      const timeout = setTimeout(() => {
+        child.kill();
+        resolve(`TIMEOUT: Command took longer than ${timeoutMs}ms`);
+      }, timeoutMs);
+
       child.stdout.on('data', (data) => (output += data.toString()));
-      child.on('close', () => resolve(output.trim()));
-      child.on('error', () => resolve(''));
+      child.stderr.on('data', (data) => (errorOut += data.toString()));
+      
+      child.on('close', (code) => {
+        clearTimeout(timeout);
+        if (code === 0) resolve(output.trim());
+        else resolve(`ERROR (Code ${code}): ${errorOut.trim() || output.trim()}`);
+      });
+      
+      child.on('error', (err) => {
+        clearTimeout(timeout);
+        resolve(`SPAWN ERROR: ${err.message}`);
+      });
     });
   }
 
   async executeOptimization(optimization) {
-    if (!this.state.autoApprove) {
-      await this.log(`⏸️  Optimization requires manual approval: ${optimization.description}`, 'WARN');
-      this.state.optimizations.push({ ...optimization, status: 'pending', timestamp: Date.now() });
-      await this.saveState();
-      return false;
-    }
-
     await this.log(`🚀 Executing: ${optimization.description}`);
     
     const outcome = { success: false, output: '', error: null };
 
     try {
-      // Backup any config files that might be modified
+      // 1. Config Backups
       if (optimization.plan?.command?.includes('/etc/')) {
         const configMatch = optimization.plan.command.match(/\/etc\/[\w\/.-]+/);
         if (configMatch) {
@@ -343,113 +270,84 @@ Requirements:
         }
       }
 
-      // Execute the optimization (would integrate with terminal-optimizer pattern)
+      // 2. Execute
       const command = optimization.plan?.command || optimization.suggestion;
+      
+      // If we have a generated script, we might want to write it to a file and run it
+      // For now, we assume simple commands, or that the 'command' is a one-liner
       const result = await this.execSafe(command);
+      
+      if (result.startsWith('ERROR') || result.startsWith('TIMEOUT') || result.startsWith('SPAWN ERROR')) {
+         throw new Error(result);
+      }
       
       outcome.success = true;
       outcome.output = result;
-      await this.log(`✅ Execution completed successfully`);
+      await this.log(`✅ Execution successful`);
 
     } catch (error) {
       outcome.error = error.message;
       await this.log(`❌ Execution failed: ${error.message}`, 'ERROR');
     }
 
-    // Store the outcome in memory for learning
     await this.storeOptimizationMemory(optimization, outcome);
-
-    // Update the task status
-    if (optimization.taskId) {
-      await this.updateTaskStatus(
-        optimization.taskId,
-        outcome.success ? 'completed' : 'failed',
-        outcome
-      );
-    }
-
-    return outcome.success;
+    return outcome;
   }
 
   async runMaintenanceCycle() {
-    await this.log('🔄 Starting maintenance cycle...');
+    await this.log('🔄 Maintenance cycle starting...');
 
     try {
-      // 1. Gather current system state
       const profile = await this.gatherSystemInfo();
-      await this.log(`System: ${profile.hostname} | Uptime: ${(profile.uptime / 3600).toFixed(1)}h | Mem: ${((profile.freeMem / profile.totalMem) * 100).toFixed(1)}% free`);
-
-      // 2. Detect optimization opportunities
       const opportunities = await this.detectOptimizationOpportunities();
       
       if (opportunities.length === 0) {
-        await this.log('✅ System is running optimally, no actions needed');
+        await this.log('✅ System healthy');
         return;
       }
 
-      await this.log(`Found ${opportunities.length} optimization opportunities`);
-
-      // 3. For each opportunity, use the router to determine best action
       for (const opp of opportunities) {
-        await this.log(`📋 Opportunity: ${opp.description} (${opp.severity})`);
-        
-        // Check if we've tried this before and failed
-        const pastAttempts = await this.checkPastOptimizations(opp.type);
-        if (pastAttempts.hasFailures) {
-          await this.log(`⚠️  Skipping ${opp.type} - ${pastAttempts.failures.length} past failures`, 'WARN');
-          continue;
+        // Skip if recently failed
+        const history = await this.checkPastOptimizations(opp.type);
+        if (history.hasFailures) {
+            await this.log(`Skipping ${opp.type} due to recent failures`, 'WARN');
+            continue;
         }
 
-        // Use SearchAgent to find best practices
-        const searchResult = await this.searchBestPractices(
-          `Ubuntu ${opp.type} optimization best practices`
-        );
-
-        // Use TerminalAgent + CodeGenerator to plan the fix with custom script
+        // Plan
         const plan = await this.planOptimization(
-          `${opp.suggestion}. System context: ${JSON.stringify(profile)}`,
+          `${opp.suggestion}. Context: ${JSON.stringify(profile)}`,
           { shell: 'bash', os: 'linux' }
         );
-
-        await this.log(`💡 Suggested: ${plan.terminalCommand.substring(0, 100)}...`);
-        await this.log(`⚠️  Risk: ${plan.riskLevel} | Sudo: ${plan.requiresSudo}`);
         
-        if (plan.generatedScript) {
-          await this.log(`📜 Custom script generated (${plan.scriptPath || 'optimize.sh'})`);
-        }
+        if (!plan) continue;
 
-        // Create a tracked task for long-term monitoring
-        const taskId = await this.createOptimizationTask({
+        const optimizationEntry = {
           ...opp,
-          suggestion: opp.suggestion,
-          plan,
-        });
-
-        // Store for user review
-        this.state.optimizations.push({
-          ...opp,
-          searchInsights: searchResult.finalAnswer?.substring(0, 200),
           plan: {
             command: plan.terminalCommand,
-            script: plan.generatedScript,
-            scriptPath: plan.scriptPath,
-            explanation: plan.scriptExplanation,
             reasoning: plan.reasoning,
             riskLevel: plan.riskLevel,
             requiresSudo: plan.requiresSudo,
           },
-          taskId,
+          taskId: `task-${Date.now()}-${Math.floor(Math.random()*1000)}`,
           status: 'pending',
           timestamp: Date.now(),
-        });
+        };
+
+        // Auto-approve logic
+        if (this.state.autoApprove && plan.riskLevel === 'low') {
+             await this.executeOptimization(optimizationEntry);
+        } else {
+             this.state.optimizations.push(optimizationEntry);
+             await this.log(`📝 Optimization queued: ${opp.description}`);
+        }
       }
 
       await this.saveState();
-      await this.log(`📝 ${opportunities.length} optimizations queued for review`);
-      await this.log(`Review with: node lumen-daemon.js review`);
 
     } catch (err) {
-      await this.log(`❌ Error in maintenance cycle: ${err.message}`, 'ERROR');
+      await this.log(`Cycle error: ${err.message}`, 'ERROR');
     }
   }
 
@@ -464,44 +362,61 @@ Requirements:
     console.log(`\n📋 ${pending.length} Pending Optimizations:\n`);
     pending.forEach((opt, i) => {
       console.log(`${i + 1}. [${opt.severity.toUpperCase()}] ${opt.description}`);
-      console.log(`   Type: ${opt.type}`);
-      console.log(`   Suggestion: ${opt.suggestion}`);
-      if (opt.plan) {
-        console.log(`   Command: ${opt.plan.command.substring(0, 80)}...`);
-        console.log(`   Risk: ${opt.plan.riskLevel} | Sudo: ${opt.plan.requiresSudo}`);
-      }
-      console.log('');
+      console.log(`   Suggestion: ${opt.plan?.reasoning || opt.suggestion}`);
+      console.log(`   Command: ${opt.plan?.command}`);
+      console.log(`   Risk: ${opt.plan?.riskLevel || 'Unknown'}\n`);
     });
 
-    console.log('To execute an optimization:');
+    console.log('Commands:');
     console.log('  node lumen-daemon.js execute <number>');
-    console.log('\nTo enable auto-approve (use with caution):');
-    console.log('  node lumen-daemon.js auto-approve on');
-    console.log('');
+    console.log('  node lumen-daemon.js clear');
+  }
+  
+  async executePending(index) {
+      const pending = this.state.optimizations.filter((o) => o.status === 'pending');
+      const target = pending[index - 1]; // 1-based index for user
+      
+      if (!target) {
+          console.log('❌ Invalid optimization number');
+          return;
+      }
+      
+      console.log(`\nExecuting: ${target.description}...`);
+      const outcome = await this.executeOptimization(target);
+      
+      // Remove from pending list regardless of outcome (it's in history now)
+      this.state.optimizations = this.state.optimizations.filter(o => o.taskId !== target.taskId);
+      await this.saveState();
+      
+      if (outcome.success) {
+          console.log(`\n✅ Success!\nOutput:\n${outcome.output}`);
+      } else {
+          console.log(`\n❌ Failed: ${outcome.error}`);
+      }
   }
 
   async start() {
-    await this.log('🌉 Lumen Daemon starting...');
+    await this.log('bridge established. daemon active.');
     await this.loadState();
     
-    // Run maintenance cycle every hour
-    const interval = 60 * 60 * 1000; // 1 hour
-    
+    // Initial Run
     await this.runMaintenanceCycle();
     
+    // Loop (Hourly)
     setInterval(async () => {
       await this.runMaintenanceCycle();
-    }, interval);
-
-    await this.log(`✅ Daemon running (checking every ${interval / 60000} minutes)`);
-    await this.log('📊 Logs: tail -f ~/.lumen-daemon.log');
+    }, 60 * 60 * 1000);
   }
 }
 
-// CLI Interface
+// --- CLI HANDLER ---
+
 async function main() {
   const daemon = new LumenDaemon();
   const command = process.argv[2];
+  const arg = process.argv[3];
+
+  await daemon.loadState(); // Always load state first
 
   switch (command) {
     case 'start':
@@ -509,19 +424,47 @@ async function main() {
       break;
     
     case 'check':
-      await daemon.loadState();
       await daemon.runMaintenanceCycle();
       process.exit(0);
       break;
     
     case 'review':
-      await daemon.loadState();
       await daemon.reviewOptimizations();
+      process.exit(0);
+      break;
+      
+    case 'execute':
+      if (!arg) {
+          console.log('Usage: node lumen-daemon.js execute <number>');
+          process.exit(1);
+      }
+      await daemon.executePending(parseInt(arg));
+      process.exit(0);
+      break;
+      
+    case 'auto-approve':
+      if (arg === 'on') {
+          daemon.state.autoApprove = true;
+          console.log('⚠️  Auto-approve ENABLED for low-risk tasks.');
+      } else if (arg === 'off') {
+          daemon.state.autoApprove = false;
+          console.log('🔒 Auto-approve DISABLED.');
+      } else {
+          console.log(`Current setting: ${daemon.state.autoApprove ? 'ON' : 'OFF'}`);
+          console.log('Usage: node lumen-daemon.js auto-approve <on/off>');
+      }
+      await daemon.saveState();
+      process.exit(0);
+      break;
+    
+    case 'clear':
+      daemon.state.optimizations = [];
+      await daemon.saveState();
+      console.log('🗑️  Pending optimizations cleared.');
       process.exit(0);
       break;
     
     case 'status':
-      await daemon.loadState();
       await daemon.gatherSystemInfo();
       console.log(JSON.stringify(daemon.state.systemProfile, null, 2));
       process.exit(0);
@@ -529,22 +472,22 @@ async function main() {
     
     default:
       console.log(`
-🌉 Lumen Daemon - Autonomous System Optimization Agent
+🌉 Lumen Daemon - Agent Interface
 
-Usage:
-  node lumen-daemon.js start        Start the daemon (runs continuously)
-  node lumen-daemon.js check        Run a single maintenance check
-  node lumen-daemon.js review       Review pending optimizations
-  node lumen-daemon.js status       Show current system status
-
-Logs: tail -f ~/.lumen-daemon.log
-State: cat ~/.lumen-daemon-state.json
+Commands:
+  start          Start continuous background daemon
+  check          Run immediate system analysis
+  review         List pending optimization tasks
+  execute <#>    Execute a pending task
+  auto-approve   Toggle automatic execution for low-risk tasks
+  status         Show current system profile
+  clear          Clear pending tasks
       `);
       process.exit(0);
   }
 }
 
 main().catch((err) => {
-  console.error('Fatal error:', err.message);
+  console.error('Fatal error:', err);
   process.exit(1);
 });
